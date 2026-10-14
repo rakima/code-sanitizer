@@ -36,6 +36,64 @@ def test_restores_anonymized_code_unchanged() -> None:
     assert result.fully_restored
 
 
+def test_accepts_sanitized_baseline_and_reconstructs_original_source() -> None:
+    original = 'String companyName = "ABC株式会社";\n'
+    sanitized = _restorable(original)
+
+    result = restore_text(
+        sanitized.text,
+        sanitized.text,
+        sanitized.restoration_data,
+    )
+
+    assert result.text == original
+    assert result.restored_count == 1
+    assert result.source_reconstructed
+    assert not result.source_mismatch
+
+
+def test_accepts_sanitized_baseline_with_ai_edits() -> None:
+    original = 'String companyName = "ABC株式会社";\n'
+    sanitized = _restorable(original)
+    edited = (
+        "if (condition) {\n"
+        f"    {sanitized.text}"
+        "    execute(companyName);\n"
+        "}\n"
+    )
+
+    result = restore_text(
+        sanitized.text,
+        edited,
+        sanitized.restoration_data,
+    )
+
+    assert result.text == (
+        "if (condition) {\n"
+        '    String companyName = "ABC株式会社";\n'
+        "    execute(companyName);\n"
+        "}\n"
+    )
+    assert result.source_reconstructed
+    assert result.fully_restored
+
+
+def test_sanitized_baseline_missing_mapping_id_is_not_used() -> None:
+    original = 'String companyName = "ABC株式会社";\n'
+    sanitized = _restorable(original)
+    invalid_baseline = sanitized.text.replace("[REDACTED_0001]", "removed")
+
+    result = restore_text(
+        invalid_baseline,
+        sanitized.text,
+        sanitized.restoration_data,
+    )
+
+    assert result.text == sanitized.text
+    assert result.source_mismatch
+    assert not result.source_reconstructed
+
+
 def test_restores_token_inside_ai_modified_code() -> None:
     original = 'String companyName = "ABC株式会社";\n'
     sanitized = _restorable(original)

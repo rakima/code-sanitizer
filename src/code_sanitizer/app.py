@@ -158,7 +158,7 @@ class CodeSanitizerApp:
         self._add_restore_file_selector(
             inputs,
             row=0,
-            label="元コード",
+            label="匿名化時コード（元コードまたは匿名化済みコード）",
             variable=self.restore_original_path,
             command=self._select_restore_original,
         )
@@ -442,6 +442,11 @@ class CodeSanitizerApp:
             lines.append(
                 "警告: 元コードまたは復元情報の対応データが作成時と一致しません。"
                 "復元していません。"
+            )
+        elif result.source_reconstructed:
+            lines.append(
+                "復元情報と匿名化時コードから未匿名化元コードを再構成し、"
+                "SHA-256を照合しました。"
             )
         if result.review_required:
             lines.append(

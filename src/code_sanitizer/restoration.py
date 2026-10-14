@@ -35,6 +35,7 @@ class RestorationResult:
     duplicated_tokens: tuple[str, ...]
     review_required: tuple[str, ...]
     source_mismatch: bool
+    source_reconstructed: bool = False
 
     @property
     def fully_restored(self) -> bool:
@@ -134,11 +135,13 @@ def restore_text(
 ) -> RestorationResult:
     """Restore unique tokens, refusing missing, duplicate, unknown, or invalid IDs."""
     _validate_restoration_data(restoration_data)
-    original_hash = hashlib.sha256(original_text.encode("utf-8")).hexdigest()
     token_matches = tuple(_TOKEN_LIKE.finditer(edited_sanitized_text))
     tokens = [match.group() for match in token_matches]
     token_counts = Counter(tokens)
     known_entries = {entry.token: entry for entry in restoration_data.entries}
+    source_text, source_reconstructed = _resolve_original_source(
+        original_text, restoration_data
+    )
 
     missing = tuple(
         sorted(token for token in known_entries if token_counts[token] == 0)
@@ -157,13 +160,7 @@ def restore_text(
         sorted(token for token in token_counts if not _VALID_TOKEN.fullmatch(token))
     )
 
-    if original_hash != restoration_data.source_sha256 or any(
-        entry.source_start < 0
-        or entry.source_end < entry.source_start
-        or entry.source_end > len(original_text)
-        or original_text[entry.source_start : entry.source_end] != entry.value
-        for entry in restoration_data.entries
-    ):
+    if source_text is None:
         return RestorationResult(
             text=edited_sanitized_text,
             restored_count=0,
@@ -220,6 +217,7 @@ def restore_text(
         duplicated_tokens=duplicated,
         review_required=review_required,
         source_mismatch=False,
+        source_reconstructed=source_reconstructed,
     )
 
 
@@ -253,3 +251,44 @@ def _validate_restoration_data(data: RestorationData) -> None:
 def _is_standalone_line_token(text: str, token: str) -> bool:
     line_pattern = re.compile(rf"(?m)^{re.escape(token)}(?=\r?$)")
     return line_pattern.search(text) is not None
+
+
+def _resolve_original_source(
+    supplied_source: str,
+    restoration_data: RestorationData,
+) -> tuple[str | None, bool]:
+    if _matches_original_source(supplied_source, restoration_data):
+        return supplied_source, False
+
+    entries = {entry.token: entry for entry in restoration_data.entries}
+    matches = tuple(_TOKEN_LIKE.finditer(supplied_source))
+    tokens = [match.group() for match in matches]
+    counts = Counter(tokens)
+    if len(matches) != len(entries):
+        return None, False
+    if any(not _VALID_TOKEN.fullmatch(token) or counts[token] != 1 for token in tokens):
+        return None, False
+    if set(tokens) != set(entries):
+        return None, False
+
+    reconstructed = _TOKEN_LIKE.sub(
+        lambda match: entries[match.group()].value,
+        supplied_source,
+    )
+    if not _matches_original_source(reconstructed, restoration_data):
+        return None, False
+    return reconstructed, True
+
+
+def _matches_original_source(
+    text: str, restoration_data: RestorationData
+) -> bool:
+    if hashlib.sha256(text.encode("utf-8")).hexdigest() != restoration_data.source_sha256:
+        return False
+    return all(
+        entry.source_start >= 0
+        and entry.source_end >= entry.source_start
+        and entry.source_end <= len(text)
+        and text[entry.source_start : entry.source_end] == entry.value
+        for entry in restoration_data.entries
+    )
