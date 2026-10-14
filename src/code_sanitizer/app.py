@@ -1,12 +1,28 @@
 """Tkinter desktop interface for the local code sanitizer."""
 
+from collections.abc import Callable
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from .file_io import read_text_file, save_sanitized_file
+from .file_io import (
+    read_text_file,
+    save_restorable_outputs,
+    save_restored_file,
+    save_sanitized_file,
+)
 from .leak_checker import LeakCandidate, scan_for_leaks
-from .sanitizer import MaskRule, ReplacementRule, sanitize_text
+from .restoration import (
+    RestorationResult,
+    load_restoration_data,
+    restore_text,
+)
+from .sanitizer import (
+    MaskRule,
+    ReplacementRule,
+    sanitize_text,
+    sanitize_text_for_restoration,
+)
 from .settings import AppSettings, load_settings, save_settings
 
 
@@ -20,6 +36,8 @@ class CodeSanitizerApp:
         self.source_path: Path | None = None
         self.source_text = ""
         self.sanitized_text: str | None = None
+        self.restoration_result: RestorationResult | None = None
+        self.restored_text: str | None = None
         self.file_path_var = tk.StringVar(value="ファイルが選択されていません")
         self.count_var = tk.StringVar(value="置換: 0件    行マスク: 0件")
         self.status_var = tk.StringVar(value="")
@@ -47,8 +65,14 @@ class CodeSanitizerApp:
             self.root.after_idle(self._show_settings_load_error)
 
     def _build_ui(self) -> None:
-        container = ttk.Frame(self.root, padding=10)
-        container.pack(fill=tk.BOTH, expand=True)
+        self.mode_tabs = ttk.Notebook(self.root)
+        self.mode_tabs.pack(fill=tk.BOTH, expand=True)
+        self.sanitize_tab = ttk.Frame(self.mode_tabs, padding=10)
+        self.restore_tab = ttk.Frame(self.mode_tabs, padding=10)
+        self.mode_tabs.add(self.sanitize_tab, text="匿名化モード")
+        self.mode_tabs.add(self.restore_tab, text="復元モード")
+
+        container = self.sanitize_tab
         container.columnconfigure(0, weight=1)
         container.rowconfigure(4, weight=1)
 
@@ -77,6 +101,11 @@ class CodeSanitizerApp:
         ttk.Button(controls, text="匿名化を実行", command=self._sanitize).pack(
             side=tk.LEFT
         )
+        ttk.Button(
+            controls,
+            text="復元可能な匿名化を作成",
+            command=self._create_restorable_sanitized_file,
+        ).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Label(controls, textvariable=self.count_var).pack(
             side=tk.LEFT, padx=12
         )
@@ -88,6 +117,7 @@ class CodeSanitizerApp:
         )
 
         self._build_leak_check(container)
+        self._build_restoration_ui()
 
         preview = ttk.Panedwindow(container, orient=tk.HORIZONTAL)
         preview.grid(row=4, column=0, sticky="nsew")
@@ -97,6 +127,310 @@ class CodeSanitizerApp:
         ttk.Label(container, textvariable=self.status_var).grid(
             row=5, column=0, sticky="ew", pady=(6, 0)
         )
+
+    def _build_restoration_ui(self) -> None:
+        container = self.restore_tab
+        container.columnconfigure(0, weight=1)
+        container.rowconfigure(4, weight=1)
+
+        ttk.Label(
+            container,
+            text=(
+                "匿名化に使った元コード・修正後コード・復元情報を指定してください。"
+                "復元情報には元の機密文字列が含まれます。"
+            ),
+            wraplength=1050,
+        ).grid(row=0, column=0, sticky="ew", pady=(0, 8))
+
+        inputs = ttk.Frame(container)
+        inputs.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        inputs.columnconfigure(1, weight=1)
+        self.restore_original_path = tk.StringVar()
+        self.restore_edited_path = tk.StringVar()
+        self.restore_data_path = tk.StringVar()
+        self._add_restore_file_selector(
+            inputs,
+            row=0,
+            label="元コード",
+            variable=self.restore_original_path,
+            command=self._select_restore_original,
+        )
+        self._add_restore_file_selector(
+            inputs,
+            row=1,
+            label="AI修正後コード",
+            variable=self.restore_edited_path,
+            command=self._select_restore_edited,
+        )
+        self._add_restore_file_selector(
+            inputs,
+            row=2,
+            label="復元情報",
+            variable=self.restore_data_path,
+            command=self._select_restore_data,
+        )
+
+        controls = ttk.Frame(container)
+        controls.grid(row=2, column=0, sticky="ew", pady=(0, 6))
+        ttk.Button(
+            controls, text="復元を実行", command=self._run_restoration
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            controls, text="復元結果をコピー", command=self._copy_restored_result
+        ).pack(side=tk.RIGHT)
+        ttk.Button(
+            controls, text="復元結果を保存", command=self._save_restored_result
+        ).pack(side=tk.RIGHT, padx=(0, 8))
+
+        self.restore_summary = tk.Text(
+            container, height=9, wrap=tk.WORD, state=tk.DISABLED
+        )
+        self.restore_summary.grid(row=3, column=0, sticky="ew", pady=(0, 6))
+
+        preview = ttk.Panedwindow(container, orient=tk.HORIZONTAL)
+        preview.grid(row=4, column=0, sticky="nsew")
+        self.restored_text_widget = self._make_text_pane(
+            preview, "復元結果（確認用）"
+        )
+        self.restore_status_var = tk.StringVar(value="")
+        ttk.Label(container, textvariable=self.restore_status_var).grid(
+            row=5, column=0, sticky="ew", pady=(6, 0)
+        )
+
+    def _add_restore_file_selector(
+        self,
+        parent: ttk.Frame,
+        row: int,
+        label: str,
+        variable: tk.StringVar,
+        command: Callable[[], None],
+    ) -> None:
+        ttk.Label(parent, text=label).grid(
+            row=row, column=0, sticky="w", padx=(0, 8), pady=3
+        )
+        ttk.Entry(parent, textvariable=variable, state="readonly").grid(
+            row=row, column=1, sticky="ew", pady=3
+        )
+        ttk.Button(parent, text="選択", command=command).grid(
+            row=row, column=2, padx=(8, 0), pady=3
+        )
+
+    def _select_restore_original(self) -> None:
+        self._select_restore_file(
+            self.restore_original_path,
+            "元コードを選択",
+            (("テキストファイル", "*"),),
+        )
+
+    def _select_restore_edited(self) -> None:
+        self._select_restore_file(
+            self.restore_edited_path,
+            "AI修正後コードを選択",
+            (("テキストファイル", "*"),),
+        )
+
+    def _select_restore_data(self) -> None:
+        self._select_restore_file(
+            self.restore_data_path,
+            "復元情報を選択",
+            (("復元情報", "*.restoration.json"), ("すべてのファイル", "*")),
+        )
+
+    def _select_restore_file(
+        self,
+        variable: tk.StringVar,
+        title: str,
+        filetypes: tuple[tuple[str, str], ...],
+    ) -> None:
+        selected_path = filedialog.askopenfilename(
+            title=title,
+            initialdir=self.last_directory or str(Path.home()),
+            filetypes=filetypes,
+        )
+        if not selected_path:
+            return
+        variable.set(selected_path)
+        self._remember_directory(Path(selected_path).parent)
+
+    def _remember_directory(self, directory: Path) -> None:
+        self.last_directory = str(directory)
+        self._persist_settings()
+
+    def _create_restorable_sanitized_file(self) -> None:
+        if self.source_path is None:
+            messagebox.showinfo("ファイル未選択", "先にファイルを選択してください。")
+            return
+
+        result = sanitize_text_for_restoration(
+            self.source_text, self.replacement_rules, self.mask_rules
+        )
+        default_name = (
+            f"{self.source_path.stem}_restorable_sanitized"
+            f"{self.source_path.suffix}"
+        )
+        sanitized_path = filedialog.asksaveasfilename(
+            title="復元可能な匿名化コードを保存",
+            initialdir=str(self.source_path.parent),
+            initialfile=default_name,
+            defaultextension=self.source_path.suffix,
+        )
+        if not sanitized_path:
+            return
+
+        restoration_name = (
+            f"{Path(sanitized_path).name}.restoration.json"
+        )
+        restoration_path = filedialog.asksaveasfilename(
+            title="機密情報を含む復元情報を保存",
+            initialdir=str(Path(sanitized_path).parent),
+            initialfile=restoration_name,
+            defaultextension=".restoration.json",
+            filetypes=[
+                ("復元情報", "*.restoration.json"),
+                ("すべてのファイル", "*"),
+            ],
+        )
+        if not restoration_path:
+            return
+
+        try:
+            save_restorable_outputs(
+                self.source_path,
+                sanitized_path,
+                restoration_path,
+                result.text,
+                result.restoration_data,
+            )
+        except (OSError, ValueError) as error:
+            messagebox.showerror(
+                "復元可能匿名化の保存エラー",
+                "ファイルを保存できませんでした。既存ファイルは上書きしません。\n"
+                f"{error}",
+            )
+            return
+
+        self._remember_directory(Path(sanitized_path).parent)
+        self.status_var.set(
+            "復元可能な匿名化コードと復元情報を保存しました。"
+            "復元情報は機密情報を含むため、ローカルで安全に管理してください。"
+        )
+        messagebox.showinfo(
+            "保存しました",
+            f"匿名化コード:\n{sanitized_path}\n\n"
+            f"復元情報:\n{restoration_path}\n\n"
+            "復元情報には元の機密文字列が含まれます。"
+            "共有・送信・Gitへの追加を避けてください。",
+        )
+
+    def _run_restoration(self) -> None:
+        paths = (
+            self.restore_original_path.get(),
+            self.restore_edited_path.get(),
+            self.restore_data_path.get(),
+        )
+        if not all(paths):
+            messagebox.showinfo(
+                "入力が不足しています",
+                "元コード、AI修正後コード、復元情報をすべて選択してください。",
+            )
+            return
+
+        try:
+            original_text = read_text_file(paths[0])
+            edited_text = read_text_file(paths[1])
+            restoration_data = load_restoration_data(paths[2])
+            result = restore_text(original_text, edited_text, restoration_data)
+        except (OSError, UnicodeError, ValueError) as error:
+            messagebox.showerror(
+                "復元エラー", f"復元処理を完了できませんでした。\n{error}"
+            )
+            return
+
+        self.restoration_result = result
+        self.restored_text = result.text
+        self._set_text(self.restored_text_widget, result.text)
+        self._set_restore_summary(result)
+        self.restore_status_var.set(
+            "復元状態: 人間による確認が必要"
+            if not result.fully_restored
+            else "復元状態: ID整合性を確認（出力内容の確認を推奨）"
+        )
+
+    def _set_restore_summary(self, result: RestorationResult) -> None:
+        status = (
+            "人間による確認が必要"
+            if not result.fully_restored
+            else "未解決IDなし（出力内容の目視確認を推奨）"
+        )
+        lines = [
+            f"復元状態: {status}",
+            f"復元成功件数: {result.restored_count}",
+            f"未復元件数: {result.unresolved_count}",
+            f"消失したREDACTED: {', '.join(result.missing_tokens) or 'なし'}",
+            f"不正なREDACTED: {', '.join(result.invalid_tokens) or 'なし'}",
+            f"未知のREDACTED: {', '.join(result.unknown_tokens) or 'なし'}",
+            f"重複したREDACTED: {', '.join(result.duplicated_tokens) or 'なし'}",
+        ]
+        if result.source_mismatch:
+            lines.append(
+                "警告: 元コードまたは復元情報の対応データが作成時と一致しません。"
+                "復元していません。"
+            )
+        if result.review_required:
+            lines.append(
+                "行マスクIDは元の行全体を復元するため人間の確認が必要です。"
+                "行内にAI編集があるIDは自動復元していません: "
+                + ", ".join(result.review_required)
+            )
+        self.restore_summary.configure(state=tk.NORMAL)
+        self.restore_summary.delete("1.0", tk.END)
+        self.restore_summary.insert("1.0", "\n".join(lines))
+        self.restore_summary.configure(state=tk.DISABLED)
+
+    def _save_restored_result(self) -> None:
+        if self.restored_text is None or self.restoration_result is None:
+            messagebox.showinfo("結果なし", "先に復元を実行してください。")
+            return
+
+        original_path = Path(self.restore_original_path.get())
+        destination = filedialog.asksaveasfilename(
+            title="復元結果を保存",
+            initialdir=self.last_directory or str(original_path.parent),
+            initialfile=f"{original_path.stem}_restored{original_path.suffix}",
+            defaultextension=original_path.suffix,
+        )
+        if not destination:
+            return
+
+        protected_paths = (
+            self.restore_original_path.get(),
+            self.restore_edited_path.get(),
+            self.restore_data_path.get(),
+        )
+        try:
+            save_restored_file(destination, self.restored_text, protected_paths)
+        except (OSError, ValueError) as error:
+            messagebox.showerror(
+                "復元結果の保存エラー",
+                f"ファイルを保存できませんでした。\n{error}",
+            )
+            return
+        self._remember_directory(Path(destination).parent)
+        self.restore_status_var.set(f"復元結果を保存しました: {destination}")
+
+    def _copy_restored_result(self) -> None:
+        if self.restored_text is None:
+            messagebox.showinfo("結果なし", "先に復元を実行してください。")
+            return
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(self.restored_text)
+        except tk.TclError as error:
+            messagebox.showerror(
+                "コピーエラー", f"復元結果をコピーできませんでした。\n{error}"
+            )
+            return
+        self.restore_status_var.set("復元結果をクリップボードにコピーしました。")
 
     def _build_leak_check(self, parent: ttk.Frame) -> None:
         frame = ttk.LabelFrame(
