@@ -5,6 +5,9 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+from tkinterdnd2 import DND_FILES
+
+from .drag_drop import parse_dropped_files
 from .file_io import (
     read_text_file,
     save_restorable_outputs,
@@ -85,6 +88,10 @@ class CodeSanitizerApp:
         ttk.Label(file_frame, textvariable=self.file_path_var).grid(
             row=0, column=1, sticky="ew"
         )
+        drop_hint = ttk.Label(file_frame, text="またはここへファイルをドロップ")
+        drop_hint.grid(row=1, column=0, columnspan=3, sticky="w")
+        self._bind_file_drop(file_frame, self._drop_source_file)
+        self._bind_file_drop(drop_hint, self._drop_source_file)
         ttk.Label(file_frame, text="ルールはローカルに自動保存").grid(
             row=0, column=2, padx=(8, 0)
         )
@@ -208,12 +215,61 @@ class CodeSanitizerApp:
         ttk.Label(parent, text=label).grid(
             row=row, column=0, sticky="w", padx=(0, 8), pady=3
         )
-        ttk.Entry(parent, textvariable=variable, state="readonly").grid(
+        path_entry = ttk.Entry(parent, textvariable=variable, state="readonly")
+        path_entry.grid(
             row=row, column=1, sticky="ew", pady=3
+        )
+        self._bind_file_drop(
+            path_entry,
+            lambda event, target=variable: self._drop_restore_file(event, target),
+        )
+        drop_hint = ttk.Label(parent, text="ここへドロップ")
+        drop_hint.grid(
+            row=row, column=3, padx=(6, 0), pady=3
+        )
+        self._bind_file_drop(
+            drop_hint,
+            lambda event, target=variable: self._drop_restore_file(event, target),
         )
         ttk.Button(parent, text="選択", command=command).grid(
             row=row, column=2, padx=(8, 0), pady=3
         )
+
+    def _bind_file_drop(
+        self, widget: tk.Misc, handler: Callable[[tk.Event], str]
+    ) -> None:
+        widget.drop_target_register(DND_FILES)
+        widget.dnd_bind("<<Drop>>", handler)
+
+    def _drop_source_file(self, event: tk.Event) -> str:
+        try:
+            paths = parse_dropped_files(self.root.tk, event.data)
+        except ValueError as error:
+            messagebox.showerror("ドロップエラー", str(error))
+            return "break"
+        if len(paths) != 1:
+            messagebox.showwarning(
+                "ファイル数を確認してください",
+                "匿名化モードにはファイルを1つだけドロップしてください。",
+            )
+            return "break"
+        self._load_source_file(paths[0])
+        return "break"
+
+    def _drop_restore_file(self, event: tk.Event, variable: tk.StringVar) -> str:
+        try:
+            paths = parse_dropped_files(self.root.tk, event.data)
+        except ValueError as error:
+            messagebox.showerror("ドロップエラー", str(error))
+            return "break"
+        if len(paths) != 1:
+            messagebox.showwarning(
+                "ファイル数を確認してください",
+                "各入力欄にはファイルを1つずつドロップしてください。",
+            )
+            return "break"
+        self._set_restore_file(variable, paths[0])
+        return "break"
 
     def _select_restore_original(self) -> None:
         self._select_restore_file(
@@ -248,6 +304,17 @@ class CodeSanitizerApp:
             filetypes=filetypes,
         )
         if not selected_path:
+            return
+        self._set_restore_file(variable, selected_path)
+
+    def _set_restore_file(
+        self, variable: tk.StringVar, selected_path: str
+    ) -> None:
+        if not Path(selected_path).is_file():
+            messagebox.showerror(
+                "ファイル選択エラー",
+                f"選択したパスはファイルではありません。\n{selected_path}",
+            )
             return
         variable.set(selected_path)
         self._remember_directory(Path(selected_path).parent)
@@ -579,6 +646,9 @@ class CodeSanitizerApp:
         if not selected_path:
             return
 
+        self._load_source_file(selected_path)
+
+    def _load_source_file(self, selected_path: str) -> None:
         try:
             content = read_text_file(selected_path)
         except (OSError, UnicodeError) as error:
@@ -909,7 +979,9 @@ class CodeSanitizerApp:
 
 
 def main() -> None:
-    root = tk.Tk()
+    from tkinterdnd2 import TkinterDnD
+
+    root = TkinterDnD.Tk()
     CodeSanitizerApp(root)
     root.mainloop()
 
