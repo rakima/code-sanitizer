@@ -73,7 +73,13 @@ def save_settings(
             {"search": rule.search, "replacement": rule.replacement}
             for rule in settings.replacement_rules
         ],
-        "mask_rules": [{"search": rule.search} for rule in settings.mask_rules],
+        "mask_rules": [
+            {
+                "search": rule.search,
+                "match_date_formats": rule.match_date_formats,
+            }
+            for rule in settings.mask_rules
+        ],
         "last_directory": settings.last_directory,
     }
     temporary_path = settings_path.with_name(f"{settings_path.name}.tmp")
@@ -115,7 +121,13 @@ def _read_mask_rules(value: Any) -> list[MaskRule]:
             not isinstance(item, dict)
             or not isinstance(item.get("search"), str)
             or not item["search"]
+            or not isinstance(item.get("match_date_formats", False), bool)
         ):
             raise ValueError("設定ファイルに正しくない行マスクルールがあります。")
-        rules.append(MaskRule(item["search"]))
+        rules.append(
+            MaskRule(
+                item["search"],
+                match_date_formats=item.get("match_date_formats", False),
+            )
+        )
     return rules

@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 import hashlib
+import re
 from typing import Iterable
 
 from .restoration import RestorationData, RestorationEntry
@@ -16,6 +17,16 @@ class ReplacementRule:
 @dataclass(frozen=True)
 class MaskRule:
     search: str
+    match_date_formats: bool = False
+
+
+DATE_MASK_LABEL = "yyyy/mm/dd または yyyy年mm月dd日"
+_DATE_PATTERNS = (
+    re.compile(r"(?<![0-9])[0-9]{4}/[0-9]{1,2}/[0-9]{1,2}(?![0-9])"),
+    re.compile(
+        r"(?<![0-9])[0-9]{4}年[0-9]{1,2}月[0-9]{1,2}日(?![0-9])"
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -49,7 +60,7 @@ def sanitize_text(
         content = line.rstrip("\r\n")
         line_ending = line[len(content) :]
 
-        if any(rule.search in content for rule in masks):
+        if any(_matches_mask_rule(content, rule) for rule in masks):
             output_lines.append(f"[REDACTED]{line_ending}")
             masked_line_count += 1
             continue
@@ -108,7 +119,7 @@ def sanitize_text_for_restoration(
         content = line.rstrip("\r\n")
         line_ending = line[len(content) :]
 
-        if any(rule.search in content for rule in masks):
+        if any(_matches_mask_rule(content, rule) for rule in masks):
             output_lines.append(
                 f"{make_token(content, 'line', source_offset)}{line_ending}"
             )
@@ -149,3 +160,9 @@ def sanitize_text_for_restoration(
         masked_line_count=masked_line_count,
         restoration_data=restoration_data,
     )
+
+
+def _matches_mask_rule(content: str, rule: MaskRule) -> bool:
+    if rule.match_date_formats:
+        return any(pattern.search(content) for pattern in _DATE_PATTERNS)
+    return rule.search in content

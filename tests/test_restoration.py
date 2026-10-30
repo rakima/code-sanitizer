@@ -4,6 +4,7 @@ import pytest
 
 from code_sanitizer.restoration import (
     RestorationData,
+    load_restoration_data,
     parse_restoration_data,
     restore_text,
     serialize_restoration_data,
@@ -279,6 +280,26 @@ def test_line_mask_with_ai_edits_keeps_marker_and_requires_review() -> None:
     assert not result.fully_restored
 
 
+def test_date_mask_is_recorded_as_a_restorable_line_mask() -> None:
+    original = "updatedAt = '2024/01/02';\n"
+    sanitized = sanitize_text_for_restoration(
+        original,
+        mask_rules=(
+            MaskRule(
+                "yyyy/mm/dd または yyyy年mm月dd日",
+                match_date_formats=True,
+            ),
+        ),
+    )
+
+    assert sanitized.text == "[REDACTED_0001]\n"
+    assert sanitized.masked_line_count == 1
+    assert sanitized.restoration_data.entries[0].kind == "line"
+    assert restore_text(
+        original, sanitized.text, sanitized.restoration_data
+    ).text == original
+
+
 def test_wrong_original_source_refuses_to_restore_any_marker() -> None:
     original = 'String name = "ABC株式会社";\n'
     sanitized = _restorable(original)
@@ -345,6 +366,25 @@ def test_restoration_data_round_trip_and_validation() -> None:
     )
     with pytest.raises(ValueError, match="重複"):
         serialize_restoration_data(duplicate_data)
+
+
+def test_load_restoration_data_accepts_json_file(tmp_path) -> None:
+    sanitized = _restorable('String companyName = "ABC株式会社";\n')
+    path = tmp_path / "mapping.restoration.json"
+    path.write_text(
+        serialize_restoration_data(sanitized.restoration_data),
+        encoding="utf-8",
+    )
+
+    assert load_restoration_data(path) == sanitized.restoration_data
+
+
+def test_load_restoration_data_rejects_non_json_file(tmp_path) -> None:
+    path = tmp_path / "mapping.java"
+    path.write_text("not restoration metadata", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"\.json"):
+        load_restoration_data(path)
 
 
 def test_restoration_data_with_invalid_hash_is_rejected() -> None:

@@ -19,7 +19,13 @@ def test_settings_round_trip_rules_and_last_directory(tmp_path: Path) -> None:
             ReplacementRule("gaia", "product"),
             ReplacementRule("秘密", ""),
         ),
-        mask_rules=(MaskRule("顧客名"),),
+        mask_rules=(
+            MaskRule("顧客名"),
+            MaskRule(
+                "yyyy/mm/dd または yyyy年mm月dd日",
+                match_date_formats=True,
+            ),
+        ),
         last_directory=r"C:\work\source",
     )
 
@@ -27,6 +33,17 @@ def test_settings_round_trip_rules_and_last_directory(tmp_path: Path) -> None:
 
     assert load_settings(settings_path) == settings
     assert not settings_path.with_name("settings.json.tmp").exists()
+
+
+def test_settings_without_date_mask_flag_remain_compatible(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        '{"version": 1, "replacement_rules": [], '
+        '"mask_rules": [{"search": "顧客名"}]}',
+        encoding="utf-8",
+    )
+
+    assert load_settings(settings_path).mask_rules == (MaskRule("顧客名"),)
 
 
 def test_saved_settings_are_utf8_json(tmp_path: Path) -> None:

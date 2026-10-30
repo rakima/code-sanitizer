@@ -21,6 +21,7 @@ from .restoration import (
     restore_text,
 )
 from .sanitizer import (
+    DATE_MASK_LABEL,
     MaskRule,
     ReplacementRule,
     sanitize_text,
@@ -289,7 +290,7 @@ class CodeSanitizerApp:
         self._select_restore_file(
             self.restore_data_path,
             "復元情報を選択",
-            (("復元情報", "*.restoration.json"), ("すべてのファイル", "*")),
+            (("JSONファイル", "*.json"),),
         )
 
     def _select_restore_file(
@@ -310,6 +311,15 @@ class CodeSanitizerApp:
     def _set_restore_file(
         self, variable: tk.StringVar, selected_path: str
     ) -> None:
+        if (
+            variable is self.restore_data_path
+            and Path(selected_path).suffix.lower() != ".json"
+        ):
+            messagebox.showerror(
+                "ファイル選択エラー",
+                "復元情報にはJSONファイル（.json）を指定してください。",
+            )
+            return
         if not Path(selected_path).is_file():
             messagebox.showerror(
                 "ファイル選択エラー",
@@ -628,16 +638,21 @@ class CodeSanitizerApp:
         self.mask_tree = ttk.Treeview(
             frame, columns=("search",), show="headings", height=4
         )
-        self.mask_tree.heading("search", text="この文字列を含む行をマスク")
+        self.mask_tree.heading("search", text="この条件を含む行をマスク")
         self.mask_tree.column("search", width=300)
-        self.mask_tree.grid(row=0, column=0, columnspan=2, sticky="ew")
+        self.mask_tree.grid(row=0, column=0, columnspan=3, sticky="ew")
         ttk.Label(frame, text="検索文字列").grid(
             row=1, column=0, sticky="w", pady=(6, 0)
         )
         self.mask_search_entry = ttk.Entry(frame)
         self.mask_search_entry.grid(row=2, column=0, sticky="ew", padx=(0, 4))
         ttk.Button(frame, text="追加", command=self._add_mask_rule).grid(
-            row=2, column=1
+            row=2, column=1, padx=(0, 4)
+        )
+        ttk.Button(
+            frame, text="日付形式を追加", command=self._add_date_mask_rule
+        ).grid(
+            row=2, column=2
         )
         ttk.Button(frame, text="選択を削除", command=self._remove_mask_rule).grid(
             row=3, column=0, sticky="w", pady=(4, 0)
@@ -718,6 +733,16 @@ class CodeSanitizerApp:
         self.mask_rules.append(rule)
         self.mask_tree.insert("", tk.END, values=(rule.search,))
         self.mask_search_entry.delete(0, tk.END)
+        self._persist_settings()
+        self._sanitize_if_loaded()
+
+    def _add_date_mask_rule(self) -> None:
+        rule = MaskRule(DATE_MASK_LABEL, match_date_formats=True)
+        if rule in self.mask_rules:
+            return
+
+        self.mask_rules.append(rule)
+        self.mask_tree.insert("", tk.END, values=(rule.search,))
         self._persist_settings()
         self._sanitize_if_loaded()
 

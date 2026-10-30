@@ -123,8 +123,11 @@ def parse_restoration_data(contents: str) -> RestorationData:
 
 def load_restoration_data(path: str | Path) -> RestorationData:
     """Load restoration data locally from UTF-8 JSON."""
+    restoration_path = Path(path)
+    if restoration_path.suffix.lower() != ".json":
+        raise ValueError("復元情報にはJSONファイル（.json）を指定してください。")
     return parse_restoration_data(
-        Path(path).read_text(encoding="utf-8")
+        restoration_path.read_text(encoding="utf-8")
     )
 
 

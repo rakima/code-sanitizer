@@ -74,6 +74,40 @@ def test_masks_multiple_lines_and_preserves_line_endings() -> None:
     assert result.masked_line_count == 2
 
 
+@pytest.mark.parametrize(
+    "date",
+    ["2024/01/02", "2024年01月02日", "2024年1月2日"],
+)
+def test_masks_lines_containing_supported_date_formats(date: str) -> None:
+    result = sanitize_text(
+        f"updatedAt = '{date}';\nkeep();",
+        mask_rules=[
+            MaskRule(
+                "yyyy/mm/dd または yyyy年mm月dd日",
+                match_date_formats=True,
+            )
+        ],
+    )
+
+    assert result.text == "[REDACTED]\nkeep();"
+    assert result.masked_line_count == 1
+
+
+def test_date_mask_does_not_match_dates_embedded_in_longer_numbers() -> None:
+    result = sanitize_text(
+        "id = 12024/01/02;\nkeep();",
+        mask_rules=[
+            MaskRule(
+                "yyyy/mm/dd または yyyy年mm月dd日",
+                match_date_formats=True,
+            )
+        ],
+    )
+
+    assert result.text == "id = 12024/01/02;\nkeep();"
+    assert result.masked_line_count == 0
+
+
 def test_replacement_and_mask_rules_are_combined() -> None:
     result = sanitize_text(
         "nkc package\ncustomer record",
